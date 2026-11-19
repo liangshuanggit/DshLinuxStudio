@@ -42,6 +42,17 @@ class LinuxRuntime(private val context: Context) {
 
     private val xdgMutex = Mutex()
 
+    // 按设备架构选根文件系统 / Node：arm64 真机用 arm64 包，
+    // x86_64（InstaBox 模拟器调试用）用 amd64 包。os.arch 在安卓上
+    // arm64 返回 aarch64，x86_64 返回 x86_64。
+    private val isX86_64: Boolean = (System.getProperty("os.arch") ?: "").contains("x86")
+    private val rootfsFile: String = if (isX86_64) ROOTFS_FILE_AMD64 else ROOTFS_FILE_ARM64
+    private val rootfsUrl: String = ROOTFS_URL_BASE + rootfsFile
+    private val rootfsSha256: String = if (isX86_64) ROOTFS_SHA256_AMD64 else ROOTFS_SHA256_ARM64
+    private val nodeFile: String = if (isX86_64) NODE_FILE_X64 else NODE_FILE_ARM64
+    private val nodeUrl: String = NODE_URL_BASE + nodeFile
+    private val nodeSha256: String = if (isX86_64) NODE_SHA256_X64 else NODE_SHA256_ARM64
+
     private var dshProcess: Process? = null
     private var codeProcess: Process? = null
 
@@ -93,11 +104,11 @@ class LinuxRuntime(private val context: Context) {
         ensureDirs()
         try {
             if (!linuxMarker.exists()) {
-                onStep("下载 Ubuntu 24.04 arm64 根文件系统", 5)
-                val rootfsArchive = File(downloads, ROOTFS_FILE)
+                onStep("下载 Ubuntu 24.04 根文件系统", 5)
+                val rootfsArchive = File(downloads, rootfsFile)
                 download(
-                    ROOTFS_URL,
-                    ROOTFS_SHA256,
+                    rootfsUrl,
+                    rootfsSha256,
                     rootfsArchive,
                     onProgress = { p -> onStep("下载 Ubuntu 根文件系统 $p%", 5 + p / 5) }
                 )
@@ -124,10 +135,10 @@ class LinuxRuntime(private val context: Context) {
 
             if (!nodeMarker.exists()) {
                 onStep("下载 Node.js 24.22.3", 68)
-                val nodeArchive = File(downloads, NODE_FILE)
+                val nodeArchive = File(downloads, nodeFile)
                 download(
-                    NODE_URL,
-                    NODE_SHA256,
+                    nodeUrl,
+                    nodeSha256,
                     nodeArchive,
                     onProgress = { p -> onStep("下载 Node.js $p%", 68 + p / 5) }
                 )
@@ -358,11 +369,14 @@ class LinuxRuntime(private val context: Context) {
             File(rootfs, "etc/resolv.conf"),
             "nameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 8.8.8.8\n"
         )
+        // arm64 用 ports 源，amd64 用主 archive 源，路径不同不能混用。
+        val aptArchive =
+            if (isX86_64) "http://archive.ubuntu.com/ubuntu" else "http://ports.ubuntu.com/ubuntu-ports"
         writeFile(
             File(rootfs, "etc/apt/sources.list"),
-            "deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\n" +
-                "deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\n" +
-                "deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n"
+            "deb $aptArchive noble main restricted universe multiverse\n" +
+                "deb $aptArchive noble-updates main restricted universe multiverse\n" +
+                "deb $aptArchive noble-security main restricted universe multiverse\n"
         )
         writeFile(
             File(rootfs, "etc/profile.d/mobile-dev.sh"),
@@ -528,15 +542,21 @@ class LinuxRuntime(private val context: Context) {
     companion object {
         private const val TIMEOUT_MINUTES = 15L
 
-        private const val ROOTFS_FILE = "ubuntu-base-24.04.5-base-arm64.tar.gz"
-        private const val ROOTFS_URL =
-            "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/$ROOTFS_FILE"
-        private const val ROOTFS_SHA256 =
+        private const val ROOTFS_FILE_ARM64 = "ubuntu-base-24.04.5-base-arm64.tar.gz"
+        private const val ROOTFS_FILE_AMD64 = "ubuntu-base-24.04.5-base-amd64.tar.gz"
+        private const val ROOTFS_URL_BASE =
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/"
+        private const val ROOTFS_SHA256_ARM64 =
             "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
+        private const val ROOTFS_SHA256_AMD64 =
+            "e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86"
 
-        private const val NODE_FILE = "node-v24.22.3-linux-arm64.tar.gz"
-        private const val NODE_URL = "https://nodejs.org/dist/v24.22.3/$NODE_FILE"
-        private const val NODE_SHA256 =
+        private const val NODE_FILE_ARM64 = "node-v24.22.3-linux-arm64.tar.gz"
+        private const val NODE_FILE_X64 = "node-v24.22.3-linux-x64.tar.gz"
+        private const val NODE_URL_BASE = "https://nodejs.org/dist/v24.22.3/"
+        private const val NODE_SHA256_ARM64 =
             "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8"
+        private const val NODE_SHA256_X64 =
+            "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2"
     }
 }
