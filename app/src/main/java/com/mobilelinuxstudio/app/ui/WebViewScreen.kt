@@ -1,7 +1,15 @@
 package com.mobilelinuxstudio.app.ui
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.util.Log
+import android.view.ViewGroup
+import android.webkit.ConsoleMessage
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,6 +48,18 @@ fun WebViewScreen(target: WebTarget, vm: MainViewModel) {
                     allowFileAccess = false
                     allowContentAccess = false
                 }
+                WebView.setWebContentsDebuggingEnabled(true)
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
+                        if (message != null) {
+                            val text = "[web:${message.messageLevel()}] ${message.message()} " +
+                                "(${message.sourceId()}:${message.lineNumber()})"
+                            Log.d("dsh-web", text)
+                            AppState.log(text)
+                        }
+                        return true
+                    }
+                }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView?,
@@ -47,6 +67,43 @@ fun WebViewScreen(target: WebTarget, vm: MainViewModel) {
                     ): Boolean {
                         val requested = request?.url?.host.orEmpty()
                         return requested !in setOf("127.0.0.1", "localhost")
+                    }
+
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                        AppState.log("[web] 页面开始加载：$url")
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        AppState.log("[web] 页面加载完成：$url")
+                    }
+
+                    override fun onReceivedError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        error: WebResourceError?
+                    ) {
+                        AppState.log(
+                            "[web-err] 资源加载失败：${request?.url} " +
+                                "code=${error?.errorCode} ${error?.description}"
+                        )
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        errorResponse: WebResourceResponse?
+                    ) {
+                        AppState.log("[web-err] HTTP ${errorResponse?.statusCode}：${request?.url}")
+                    }
+
+                    override fun onRenderProcessGone(
+                        view: WebView?,
+                        detail: RenderProcessGoneDetail?
+                    ): Boolean {
+                        AppState.log("[web-err] 渲染器进程退出：didCrash=${detail?.didCrash()}")
+                        (view?.parent as? ViewGroup)?.removeView(view)
+                        view?.destroy()
+                        return true
                     }
                 }
                 webView = this

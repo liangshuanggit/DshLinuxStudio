@@ -142,7 +142,7 @@ fun HomeScreen(vm: MainViewModel, onOpenWeb: (WebTarget) -> Unit) {
                         Text("运行日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                         TextButton(onClick = { AppState.clearLogs() }) { Text("清空") }
                     }
-                    val recent = logs.takeLast(12).asReversed()
+                    val recent = logs.takeLast(40).asReversed()
                     if (recent.isEmpty()) {
                         Text("暂无日志。先安装 Linux 环境。", style = MaterialTheme.typography.bodySmall)
                     } else {
