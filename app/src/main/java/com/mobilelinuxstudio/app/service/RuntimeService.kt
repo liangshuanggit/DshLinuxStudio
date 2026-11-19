@@ -42,10 +42,22 @@ class RuntimeService : Service() {
             ACTION_START_DSH -> {
                 val key = intent?.getStringExtra(EXTRA_API_KEY).orEmpty()
                 val port = intent?.getIntExtra(EXTRA_PORT, 3080) ?: 3080
-                val result = runtime.startDsh(key, port)
-                AppState.log(result.output)
-                monitor(runtime.dshProcessOrNull(), "dsh")
-                refreshStatus()
+                // 补装 xdg-user-dirs 要跑 apt（耗时），放后台线程做，再启动 dsh。
+                scope.launch {
+                    AppState.setBusy(true)
+                    try {
+                        val repaired = runtime.ensureXdgUserDir()
+                        if (repaired.exitCode != 0) {
+                            AppState.log("[dsh] 补装 xdg-user-dirs 失败，默认工作区可能仍无法创建")
+                        }
+                        val result = runtime.startDsh(key, port)
+                        AppState.log(result.output)
+                        monitor(runtime.dshProcessOrNull(), "dsh")
+                        refreshStatus()
+                    } finally {
+                        AppState.setBusy(false)
+                    }
+                }
             }
             ACTION_STOP_DSH -> {
                 runtime.stopDsh()
