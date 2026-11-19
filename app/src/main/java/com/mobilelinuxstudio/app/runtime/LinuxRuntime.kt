@@ -2,6 +2,8 @@ package com.mobilelinuxstudio.app.runtime
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -36,6 +38,9 @@ class LinuxRuntime(private val context: Context) {
     private val nodeMarker = File(rootfs, ".dsh-linux-studio-node")
     private val dshMarker = File(rootfs, ".dsh-linux-studio-dsh")
     private val codeMarker = File(rootfs, ".dsh-linux-studio-code-server")
+    private val xdgMarker = File(rootfs, ".dsh-linux-studio-xdg")
+
+    private val xdgMutex = Mutex()
 
     private var dshProcess: Process? = null
     private var codeProcess: Process? = null
@@ -46,6 +51,14 @@ class LinuxRuntime(private val context: Context) {
         File(rootfs, "etc/profile.d").mkdirs()
         File(rootfs, "root/.dsh").mkdirs()
         File(rootfs, "tmp").mkdirs()
+        // dsh 首次启动要在 Documents 下建默认工作区，Linux 下靠 xdg-user-dir 查找；
+        // 精简 rootfs 里没有 Documents 目录也没有 user-dirs 配置，查找会失败。
+        // 这里保证目录和配置一直存在（每次启动都执行，老版本安装也能补上）。
+        File(rootfs, "root/Documents").mkdirs()
+        writeFile(
+            File(rootfs, "root/.config/user-dirs.dirs"),
+            "XDG_DOCUMENTS_DIR=\"\$HOME/Documents\"\n"
+        )
     }
 
     fun status(): RuntimeStatus {
@@ -83,10 +96,11 @@ class LinuxRuntime(private val context: Context) {
                 linuxMarker.writeText("ok\n")
 
                 onStep("安装基础开发工具（git / curl / python3 / build-essential）", 55)
+                // xdg-user-dirs 提供 xdg-user-dir：dsh 首次启动靠它找 Documents 目录建默认工作区。
                 val baseTools = execForResult(
                     "apt-get update -qq && " +
                         "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends " +
-                        "git curl wget ca-certificates python3 python3-pip build-essential openssh-client"
+                        "git curl wget ca-certificates python3 python3-pip build-essential openssh-client xdg-user-dirs"
                 )
                 if (baseTools.exitCode != 0) {
                     AppState.log("基础工具安装出现警告：${baseTools.output.takeLast(800)}")
@@ -169,6 +183,40 @@ class LinuxRuntime(private val context: Context) {
             result
         } catch (e: Exception) {
             CommandResult(-1, e.stackTraceToString())
+        }
+    }
+
+    /**
+     * 保证 dsh 能找到 Documents 目录：dsh 首次启动要在
+     * `<Documents>/deepseek-harness/default-workspace` 建默认工作区，Linux 下靠
+     * `xdg-user-dir DOCUMENTS` 查找；旧版安装里没有 xdg-user-dirs 这个包，
+     * 这里一次性补装（marker 保证只做一次）。必须在后台线程调用。
+     */
+    suspend fun ensureXdgUserDir(): CommandResult {
+        if (xdgMarker.exists()) return CommandResult(0, "xdg-user-dir 已就绪")
+        return xdgMutex.withLock {
+            if (xdgMarker.exists()) {
+                CommandResult(0, "xdg-user-dir 已就绪")
+            } else {
+                withContext(Dispatchers.IO) {
+                    val check = execForResult("command -v xdg-user-dir")
+                    if (check.exitCode == 0) {
+                        xdgMarker.writeText("ok\n")
+                        CommandResult(0, "xdg-user-dir 已存在")
+                    } else {
+                        val install = execForResult(
+                            "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y xdg-user-dirs"
+                        )
+                        if (install.exitCode == 0) {
+                            xdgMarker.writeText("ok\n")
+                            CommandResult(0, "xdg-user-dir 已安装")
+                        } else {
+                            AppState.log("补装 xdg-user-dirs 失败：${install.output.takeLast(800)}")
+                            CommandResult(install.exitCode, install.output)
+                        }
+                    }
+                }
+            }
         }
     }
 
