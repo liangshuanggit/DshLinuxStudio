@@ -59,6 +59,21 @@ class LinuxRuntime(private val context: Context) {
             File(rootfs, "root/.config/user-dirs.dirs"),
             "XDG_DOCUMENTS_DIR=\"\$HOME/Documents\"\n"
         )
+        // 精简 rootfs 没有 xdg-user-dirs 包，而 v0.1.2 靠 apt 补装——弱网/无网络时
+        // apt 会失败，修不上，工作区照样打不开。这里直接在 PATH 里放一个极简
+        // xdg-user-dir 替代品：dsh 只用它查 DOCUMENTS，返回 $HOME/Documents 即可，
+        // 完全不依赖 apt 和网络；真包以后装上了也不冲突（/usr/local/bin 在 PATH 前面，
+        // 两个返回的都是同一个路径）。
+        writeFile(
+            File(rootfs, "usr/local/bin/xdg-user-dir"),
+            "#!/bin/sh\n" +
+                "# 极简 xdg-user-dir：精简 rootfs 没有 xdg-user-dirs 包，apt 也未必能装；\n" +
+                "# dsh 只用它查 DOCUMENTS，直接返回 \$HOME/Documents 即可。\n" +
+                "if [ \"\$1\" = \"DOCUMENTS\" ]; then echo \"\$HOME/Documents\"; exit 0; fi\n" +
+                "echo \"\$HOME\"\n" +
+                "exit 0\n",
+            executable = true
+        )
     }
 
     fun status(): RuntimeStatus {
@@ -189,34 +204,48 @@ class LinuxRuntime(private val context: Context) {
     /**
      * 保证 dsh 能找到 Documents 目录：dsh 首次启动要在
      * `<Documents>/deepseek-harness/default-workspace` 建默认工作区，Linux 下靠
-     * `xdg-user-dir DOCUMENTS` 查找；旧版安装里没有 xdg-user-dirs 这个包，
-     * 这里一次性补装（marker 保证只做一次）。必须在后台线程调用。
+     * `xdg-user-dir DOCUMENTS` 查找。精简 rootfs 里没有 xdg-user-dirs 这个包，
+     * v0.1.2 靠 apt 补装——弱网/无网络时 apt 会失败，修不上。
+     * v0.1.3 起：ensureDirs 直接在 PATH 里放一个极简 xdg-user-dir 替代品
+     * （只答 DOCUMENTS，返回 $HOME/Documents），完全不依赖 apt 和网络；
+     * 这里只做验证，并在日志里留档，方便排查。必须在后台线程调用。
      */
     suspend fun ensureXdgUserDir(): CommandResult {
-        if (xdgMarker.exists()) return CommandResult(0, "xdg-user-dir 已就绪")
+        if (xdgMarker.exists()) return probeXdgUserDir()
         return xdgMutex.withLock {
             if (xdgMarker.exists()) {
-                CommandResult(0, "xdg-user-dir 已就绪")
+                probeXdgUserDir()
             } else {
                 withContext(Dispatchers.IO) {
                     val check = execForResult("command -v xdg-user-dir")
-                    if (check.exitCode == 0) {
-                        xdgMarker.writeText("ok\n")
-                        CommandResult(0, "xdg-user-dir 已存在")
-                    } else {
+                    if (check.exitCode != 0) {
+                        // apt 补装是尽力而为：弱网/无网络时会失败，但这不致命，
+                        // ensureDirs 已在 PATH 里放了极简替代品。
                         val install = execForResult(
                             "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y xdg-user-dirs"
                         )
-                        if (install.exitCode == 0) {
-                            xdgMarker.writeText("ok\n")
-                            CommandResult(0, "xdg-user-dir 已安装")
-                        } else {
-                            AppState.log("补装 xdg-user-dirs 失败：${install.output.takeLast(800)}")
-                            CommandResult(install.exitCode, install.output)
+                        if (install.exitCode != 0) {
+                            AppState.log("补装 xdg-user-dirs 失败（可用替代品继续）：${install.output.takeLast(500)}")
                         }
                     }
+                    val result = probeXdgUserDir()
+                    if (result.exitCode == 0) xdgMarker.writeText("ok\n")
+                    result
                 }
             }
+        }
+    }
+
+    /** 直接问一句 DOCUMENTS，看返回是不是 dsh 能用的路径，并在日志里留档。 */
+    private suspend fun probeXdgUserDir(): CommandResult = withContext(Dispatchers.IO) {
+        val probe = execForResult("xdg-user-dir DOCUMENTS")
+        val dir = probe.output.trim()
+        AppState.log("xdg-user-dir DOCUMENTS -> $dir")
+        if (dir.isNotEmpty() && dir != "/root") {
+            CommandResult(0, "xdg-user-dir 就绪：$dir")
+        } else {
+            AppState.log("xdg-user-dir 返回不可用，默认工作区仍可能无法创建")
+            CommandResult(-1, "xdg-user-dir 返回不可用：'$dir'")
         }
     }
 
